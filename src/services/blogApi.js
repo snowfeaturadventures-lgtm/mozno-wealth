@@ -33,45 +33,35 @@ export const blogApi = {
     return response.data;
   },
 
-  // Newsletter endpoint is not available on the current deployed API.
-  // Keep this helper centralized so a future backend route can be enabled here.
+  // Subscribe to newsletter. Backend must enforce duplicate email prevention.
   subscribe: async ({ email, source, blogId, blogSlug }) => {
     const normalizedEmail = email?.trim().toLowerCase();
     if (!normalizedEmail) throw new Error("Email is required");
 
-    const storageKey = "mozno_blog_subscribers";
-    const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
-    const alreadySubscribed = existing.some(
-      (entry) => entry.email === normalizedEmail,
-    );
-
-    if (alreadySubscribed) {
-      return {
-        success: true,
-        message: "You are already subscribed.",
-        duplicate: true,
-      };
-    }
-
-    const subscription = {
+    const response = await apiClient.post("/newsletter/subscribe", {
       email: normalizedEmail,
       source,
       blogId,
       blogSlug,
-      createdAt: new Date().toISOString(),
-      syncStatus: "pending_backend_endpoint",
-    };
+    });
 
-    localStorage.setItem(
-      storageKey,
-      JSON.stringify([...existing, subscription]),
-    );
+    return response;
+  },
 
-    return {
-      success: true,
-      message: "Subscription saved. We will keep you posted.",
-      subscription,
-    };
+  // Toggle/persist a blog like in the backend.
+  likeBlog: async ({ blogId }) => {
+    if (!blogId) throw new Error("Blog ID is required");
+    const response = await apiClient.post(`/blogs/${blogId}/like`);
+    return response;
+  },
+
+  // Track a view in the backend. Server should de-dupe by visitor/session.
+  trackView: async ({ blogId, slug }) => {
+    if (!blogId && !slug) throw new Error("Blog ID or slug is required");
+    const response = await apiClient.post(`/blogs/${blogId || slug}/view`, {
+      slug,
+    });
+    return response;
   },
 };
 

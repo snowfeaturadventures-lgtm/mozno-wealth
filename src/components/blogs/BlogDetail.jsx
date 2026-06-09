@@ -38,7 +38,12 @@ import {
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { format } from "date-fns";
 import RecentPosts from "../blogs/RecentPosts";
-import { useBlog, useSubscribeToBlog } from "../../hooks/useBlog";
+import {
+  useBlog,
+  useLikeBlog,
+  useSubscribeToBlog,
+  useTrackBlogView,
+} from "../../hooks/useBlog";
 
 const MotionDiv = motion.div;
 const MotionNav = motion.nav;
@@ -89,8 +94,14 @@ const getAuthorDetails = (post) => {
     authorObject.avatar ||
     authorObject.profileImage ||
     "";
+  const bio =
+    post?.authorBio ||
+    authorObject.bio ||
+    authorObject.description ||
+    authorObject.about ||
+    "";
 
-  return { name, role, image };
+  return { name, role, image, bio };
 };
 
 const getStatValue = (post, keys, fallback = 0) => {
@@ -183,9 +194,9 @@ const BlogDetail = () => {
   const [copied, setCopied] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [criticalReady, setCriticalReady] = useState(false);
-  const [stats, setStats] = useState({ likes: 0, views: 0, comments: 0 });
   const [subscriberEmail, setSubscriberEmail] = useState("");
   const [subscriptionMessage, setSubscriptionMessage] = useState("");
+  const [commentCountOverride, setCommentCountOverride] = useState(null);
 
   const containerRef = useRef(null);
 
@@ -196,6 +207,14 @@ const BlogDetail = () => {
       setSubscriberEmail("");
     },
   });
+  const { mutate: likeBlog, isPending: isLikePending } = useLikeBlog({
+    onSuccess: (data) => {
+      const nextBlog = data?.blog || data?.data?.blog;
+      if (typeof data?.liked === "boolean") setLiked(data.liked);
+      if (typeof nextBlog?.liked === "boolean") setLiked(nextBlog.liked);
+    },
+  });
+  const { mutate: trackBlogView } = useTrackBlogView();
   const post = response;
 
   const coverSrc = useMemo(() => {
@@ -241,43 +260,13 @@ const BlogDetail = () => {
 
   useEffect(() => {
     if (!post || !postId) return;
-
-    const baseLikes = getStatValue(post, ["likes", "likeCount", "totalLikes"]);
-    const baseViews = getStatValue(post, ["views", "viewCount", "totalViews"]);
-    const baseComments = getStatValue(post, [
-      "comments",
-      "commentCount",
-      "commentsCount",
-      "totalComments",
-    ]);
-    const likedKey = `mozno_blog_liked_${postId}`;
-    const localStatsKey = `mozno_blog_stats_${postId}`;
-    const localStats = JSON.parse(localStorage.getItem(localStatsKey) || "{}");
-
-    setLiked(localStorage.getItem(likedKey) === "true");
-    setStats({
-      likes: baseLikes + (Number(localStats.likesDelta) || 0),
-      views: baseViews + (Number(localStats.viewsDelta) || 0),
-      comments: baseComments,
-    });
+    setLiked(Boolean(post.liked || post.isLiked));
   }, [post, postId]);
 
   useEffect(() => {
     if (!post || !postId) return;
-
-    const viewSessionKey = `mozno_blog_viewed_${postId}`;
-    const localStatsKey = `mozno_blog_stats_${postId}`;
-    if (sessionStorage.getItem(viewSessionKey)) return;
-
-    sessionStorage.setItem(viewSessionKey, "true");
-    const localStats = JSON.parse(localStorage.getItem(localStatsKey) || "{}");
-    const nextStats = {
-      ...localStats,
-      viewsDelta: (Number(localStats.viewsDelta) || 0) + 1,
-    };
-    localStorage.setItem(localStatsKey, JSON.stringify(nextStats));
-    setStats((current) => ({ ...current, views: current.views + 1 }));
-  }, [post, postId]);
+    trackBlogView({ blogId: postId, slug });
+  }, [post, postId, slug, trackBlogView]);
 
   useEffect(() => {
     if (!post) return;
@@ -302,26 +291,8 @@ const BlogDetail = () => {
   /* ────── memoized handlers ────── */
   const handleLike = useCallback(() => {
     if (!postId) return;
-    const localStatsKey = `mozno_blog_stats_${postId}`;
-    const likedKey = `mozno_blog_liked_${postId}`;
-    const localStats = JSON.parse(localStorage.getItem(localStatsKey) || "{}");
-
-    setLiked((previous) => {
-      const nextLiked = !previous;
-      const delta = nextLiked ? 1 : -1;
-      const nextStats = {
-        ...localStats,
-        likesDelta: (Number(localStats.likesDelta) || 0) + delta,
-      };
-      localStorage.setItem(localStatsKey, JSON.stringify(nextStats));
-      localStorage.setItem(likedKey, String(nextLiked));
-      setStats((current) => ({
-        ...current,
-        likes: Math.max(0, current.likes + delta),
-      }));
-      return nextLiked;
-    });
-  }, [postId]);
+    likeBlog({ blogId: postId, slug });
+  }, [likeBlog, postId, slug]);
   const handleSave = useCallback(() => setSaved((p) => !p), []);
 
   const handleCopyLink = useCallback(() => {
@@ -381,13 +352,6 @@ const BlogDetail = () => {
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   }, []);
 
-  const handleCommentCountChange = useCallback((count) => {
-    setStats((current) => ({
-      ...current,
-      comments: Number(count) || 0,
-    }));
-  }, []);
-
   const scrollToTop = useCallback(
     () => window.scrollTo({ top: 0, behavior: "smooth" }),
     []
@@ -426,16 +390,33 @@ const BlogDetail = () => {
   const summaryLine = useMemo(() => {
     if (!post) return "";
     if (post.subTitle?.trim()) return post.subTitle.trim();
+    if (post.excerpt?.trim()) return post.excerpt.trim();
     if (!post.description) return "";
     const text = post.description
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim();
-    if (!text) return "";
-    return text.length > 260 ? `${text.slice(0, 257)}...` : text;
+    return text;
   }, [post]);
 
   const categoryLabel = (post?.category || "General").trim();
+  const stats = useMemo(
+    () => ({
+      likes: getStatValue(post, ["likes", "likeCount", "totalLikes"]),
+      views: getStatValue(post, ["views", "viewCount", "totalViews"]),
+      comments: getStatValue(post, [
+        "comments",
+        "commentCount",
+        "commentsCount",
+        "totalComments",
+      ]),
+    }),
+    [post],
+  );
+  const displayedCommentCount =
+    typeof commentCountOverride === "number"
+      ? commentCountOverride
+      : stats.comments;
 
   /* ────── loading state ────── */
   if (isLoading) {
@@ -745,6 +726,7 @@ const BlogDetail = () => {
                     <MotionButton
                       type="button"
                       onClick={handleLike}
+                      disabled={isLikePending}
                       whileTap={{ scale: 0.92 }}
                       whileHover={{ scale: 1.03 }}
                       className={`flex items-center gap-1.5 rounded-full px-3 py-2 transition-colors ${
@@ -765,7 +747,7 @@ const BlogDetail = () => {
                     </div>
                     <div className="flex items-center gap-1.5 px-1">
                       <MessageCircle className="h-4 w-4" />
-                      <span className="text-xs">{formatCount(stats.comments)}</span>
+                      <span className="text-xs">{formatCount(displayedCommentCount)}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
@@ -938,10 +920,11 @@ const BlogDetail = () => {
                         {author.name}
                       </h4>
                       <p className="text-xs text-stone-500 sm:text-sm">{author.role}</p>
-                      <p className="mt-3 text-sm leading-[1.65] text-stone-600">
-                        Helping individuals and businesses achieve financial success through wealth
-                        management, tax planning, and investment guidance.
-                      </p>
+                      {author.bio && (
+                        <p className="mt-3 text-sm leading-[1.65] text-stone-600">
+                          {author.bio}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </MotionDiv>
@@ -955,7 +938,8 @@ const BlogDetail = () => {
                 {post && (
                   <CommentSection
                     postId={postId}
-                    onCountChange={handleCommentCountChange}
+                    postSlug={slug}
+                    onCountChange={setCommentCountOverride}
                   />
                 )}
               </div>

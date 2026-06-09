@@ -14,6 +14,9 @@ export const blogKeys = {
   comments: (blogId) => [...blogKeys.all, "comments", blogId],
 };
 
+const getBlogSlugFromMutation = (variables) =>
+  variables?.slug || variables?.blogSlug || variables?.postSlug;
+
 const stripHtml = (value = "") =>
   String(value)
     .replace(/<[^>]+>/g, " ")
@@ -32,6 +35,7 @@ const normalizeFallbackBlog = (post) => {
     description: post.description || post.content || "",
     excerpt: post.excerpt || post.subTitle || stripHtml(post.description || post.content),
     createdAt: post.createdAt || post.publishedAt || post.date,
+    authorBio: post.authorBio || "",
     likes: post.likes || 0,
     views: post.views || 0,
     comments: post.comments || 0,
@@ -115,14 +119,54 @@ export const useBlog = (slug, options = {}) => {
 
 export const useSubscribeToBlog = (options = {}) => {
   return useMutation({
+    ...options,
     mutationFn: (data) => blogApi.subscribe(data),
     onSuccess: (data) => {
       toast.success(data.message || "Subscribed successfully");
+      options.onSuccess?.(data);
     },
     onError: (error) => {
       toast.error(error.message || "Failed to subscribe");
+      options.onError?.(error);
     },
+  });
+};
+
+export const useLikeBlog = (options = {}) => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
     ...options,
+    mutationFn: (data) => blogApi.likeBlog(data),
+    onSuccess: (data, variables) => {
+      const slug = getBlogSlugFromMutation(variables);
+      if (slug) queryClient.invalidateQueries({ queryKey: blogKeys.detail(slug) });
+      queryClient.invalidateQueries({ queryKey: blogKeys.lists() });
+      options.onSuccess?.(data, variables);
+    },
+    onError: (error, variables) => {
+      toast.error(error.response?.data?.message || error.message || "Failed to update like");
+      options.onError?.(error, variables);
+    },
+  });
+};
+
+export const useTrackBlogView = (options = {}) => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    ...options,
+    mutationFn: (data) => blogApi.trackView(data),
+    onSuccess: (data, variables) => {
+      const slug = getBlogSlugFromMutation(variables);
+      if (slug) queryClient.invalidateQueries({ queryKey: blogKeys.detail(slug) });
+      queryClient.invalidateQueries({ queryKey: blogKeys.lists() });
+      options.onSuccess?.(data, variables);
+    },
+    onError: (error, variables) => {
+      console.error("Track blog view failed:", error);
+      options.onError?.(error, variables);
+    },
   });
 };
 
@@ -148,6 +192,12 @@ export const useAddComment = (options = {}) => {
       queryClient.invalidateQueries({
         queryKey: blogKeys.comments(variables.blogId),
       });
+      if (variables.blogSlug) {
+        queryClient.invalidateQueries({
+          queryKey: blogKeys.detail(variables.blogSlug),
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: blogKeys.lists() });
       toast.success(data.message || "Comment added successfully");
     },
     onError: (error) => {

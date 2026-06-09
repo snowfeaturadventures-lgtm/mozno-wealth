@@ -278,7 +278,7 @@ const countComments = (comments = []) =>
     0,
   );
 
-const CommentSection = ({ postId, onCountChange }) => {
+const CommentSection = ({ postId, postSlug, onCountChange }) => {
   const [replyTo, setReplyTo] = useState(null);
 
   // Fetch comments
@@ -304,6 +304,7 @@ const CommentSection = ({ postId, onCountChange }) => {
     addComment(
       {
         blogId: postId,
+        blogSlug: postSlug,
         ...commentData,
       },
       {
