@@ -22,10 +22,9 @@ import {
   MessageCircle,
   Share2,
   Bookmark,
-  Facebook,
-  Twitter,
+  Instagram,
   Linkedin,
-  Mail,
+  Youtube,
   Copy,
   Check,
   ArrowUp,
@@ -33,11 +32,13 @@ import {
   Sparkles,
   ChevronRight,
   Home,
+  Send,
+  Loader2,
 } from "lucide-react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { format } from "date-fns";
 import RecentPosts from "../blogs/RecentPosts";
-import { useBlog } from "../../hooks/useBlog";
+import { useBlog, useSubscribeToBlog } from "../../hooks/useBlog";
 
 const MotionDiv = motion.div;
 const MotionNav = motion.nav;
@@ -63,6 +64,53 @@ const fadeUp = {
 const PLACEHOLDER_COVER =
   "https://via.placeholder.com/1200x630/f1f5f9/64748b?text=Mozno+Wealth+Blog";
 
+const SOCIAL_LINKS = {
+  instagram: "https://www.instagram.com/the_awareness_initiative",
+  linkedin: "https://www.linkedin.com/in/harshalvjain/",
+  youtube: "https://www.youtube.com/@awareness_initiative",
+};
+
+const getAuthorDetails = (post) => {
+  const rawAuthor = post?.author || post?.createdBy || post?.authorName;
+  const authorObject = typeof rawAuthor === "object" ? rawAuthor : {};
+  const name =
+    authorObject.name ||
+    authorObject.fullName ||
+    (typeof rawAuthor === "string" ? rawAuthor : "") ||
+    "Mozno Wealth";
+  const role =
+    post?.authorRole ||
+    authorObject.role ||
+    authorObject.title ||
+    "Contributor";
+  const image =
+    post?.authorImage ||
+    authorObject.image ||
+    authorObject.avatar ||
+    authorObject.profileImage ||
+    "";
+
+  return { name, role, image };
+};
+
+const getStatValue = (post, keys, fallback = 0) => {
+  for (const key of keys) {
+    const value = post?.[key];
+    if (typeof value === "number") return value;
+    if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) {
+      return Number(value);
+    }
+  }
+  return fallback;
+};
+
+const formatCount = (value) => {
+  const count = Number(value) || 0;
+  if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+  return String(count);
+};
+
 const staggerHeader = {
   hidden: {},
   visible: {
@@ -80,17 +128,20 @@ const headerItem = {
 };
 
 /** Isolated so `heroLoaded` resets via remount (`key`); layout effect only handles cached (already-complete) images. */
-function BlogHeroImage({ displayCoverSrc }) {
+function BlogHeroImage({ displayCoverSrc, title, onReady }) {
   const [heroLoaded, setHeroLoaded] = useState(false);
   const heroImgRef = useRef(null);
 
   useLayoutEffect(() => {
     const id = requestAnimationFrame(() => {
       const img = heroImgRef.current;
-      if (img?.complete && img.naturalHeight > 0) setHeroLoaded(true);
+      if (img?.complete && img.naturalHeight > 0) {
+        setHeroLoaded(true);
+        onReady?.();
+      }
     });
     return () => cancelAnimationFrame(id);
-  }, [displayCoverSrc]);
+  }, [displayCoverSrc, onReady]);
 
   return (
     <div className="relative aspect-video w-full bg-stone-200">
@@ -103,14 +154,19 @@ function BlogHeroImage({ displayCoverSrc }) {
       <img
         ref={heroImgRef}
         src={displayCoverSrc}
-        alt=""
+        alt={title ? `Featured image for ${title}` : ""}
         loading="eager"
+        fetchPriority="high"
         decoding="async"
         className="absolute inset-0 z-20 h-full w-full object-cover object-center transition-transform duration-500 group-hover:scale-[1.02]"
-        onLoad={() => setHeroLoaded(true)}
+        onLoad={() => {
+          setHeroLoaded(true);
+          onReady?.();
+        }}
         onError={(e) => {
           e.currentTarget.src = PLACEHOLDER_COVER;
           setHeroLoaded(true);
+          onReady?.();
         }}
       />
     </div>
@@ -126,10 +182,20 @@ const BlogDetail = () => {
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [criticalReady, setCriticalReady] = useState(false);
+  const [stats, setStats] = useState({ likes: 0, views: 0, comments: 0 });
+  const [subscriberEmail, setSubscriberEmail] = useState("");
+  const [subscriptionMessage, setSubscriptionMessage] = useState("");
 
   const containerRef = useRef(null);
 
   const { data: response, isLoading, isError, error, refetch } = useBlog(slug);
+  const { mutate: subscribeToBlog, isPending: isSubscribing } = useSubscribeToBlog({
+    onSuccess: (data) => {
+      setSubscriptionMessage(data.message || "Subscription saved.");
+      setSubscriberEmail("");
+    },
+  });
   const post = response;
 
   const coverSrc = useMemo(() => {
@@ -139,6 +205,11 @@ const BlogDetail = () => {
   }, [post]);
 
   const displayCoverSrc = coverSrc || PLACEHOLDER_COVER;
+  const postId = post?._id || post?.id || slug;
+  const author = useMemo(() => getAuthorDetails(post), [post]);
+  const authorAvatar = author.image || `https://ui-avatars.com/api/?name=${encodeURIComponent(
+    author.name
+  )}&background=047857&color=fff&size=128`;
 
   /* ────── scroll values ────── */
   const { scrollY } = useScroll();
@@ -168,8 +239,89 @@ const BlogDetail = () => {
     }
   }, [isLoading, isError, post, navigate]);
 
+  useEffect(() => {
+    if (!post || !postId) return;
+
+    const baseLikes = getStatValue(post, ["likes", "likeCount", "totalLikes"]);
+    const baseViews = getStatValue(post, ["views", "viewCount", "totalViews"]);
+    const baseComments = getStatValue(post, [
+      "comments",
+      "commentCount",
+      "commentsCount",
+      "totalComments",
+    ]);
+    const likedKey = `mozno_blog_liked_${postId}`;
+    const localStatsKey = `mozno_blog_stats_${postId}`;
+    const localStats = JSON.parse(localStorage.getItem(localStatsKey) || "{}");
+
+    setLiked(localStorage.getItem(likedKey) === "true");
+    setStats({
+      likes: baseLikes + (Number(localStats.likesDelta) || 0),
+      views: baseViews + (Number(localStats.viewsDelta) || 0),
+      comments: baseComments,
+    });
+  }, [post, postId]);
+
+  useEffect(() => {
+    if (!post || !postId) return;
+
+    const viewSessionKey = `mozno_blog_viewed_${postId}`;
+    const localStatsKey = `mozno_blog_stats_${postId}`;
+    if (sessionStorage.getItem(viewSessionKey)) return;
+
+    sessionStorage.setItem(viewSessionKey, "true");
+    const localStats = JSON.parse(localStorage.getItem(localStatsKey) || "{}");
+    const nextStats = {
+      ...localStats,
+      viewsDelta: (Number(localStats.viewsDelta) || 0) + 1,
+    };
+    localStorage.setItem(localStatsKey, JSON.stringify(nextStats));
+    setStats((current) => ({ ...current, views: current.views + 1 }));
+  }, [post, postId]);
+
+  useEffect(() => {
+    if (!post) return;
+    setCriticalReady(false);
+
+    const preload = document.createElement("link");
+    preload.rel = "preload";
+    preload.as = "image";
+    preload.href = displayCoverSrc;
+    document.head.appendChild(preload);
+
+    const image = new Image();
+    image.src = displayCoverSrc;
+    image.onload = () => setCriticalReady(true);
+    image.onerror = () => setCriticalReady(true);
+
+    return () => {
+      document.head.removeChild(preload);
+    };
+  }, [displayCoverSrc, post]);
+
   /* ────── memoized handlers ────── */
-  const handleLike = useCallback(() => setLiked((p) => !p), []);
+  const handleLike = useCallback(() => {
+    if (!postId) return;
+    const localStatsKey = `mozno_blog_stats_${postId}`;
+    const likedKey = `mozno_blog_liked_${postId}`;
+    const localStats = JSON.parse(localStorage.getItem(localStatsKey) || "{}");
+
+    setLiked((previous) => {
+      const nextLiked = !previous;
+      const delta = nextLiked ? 1 : -1;
+      const nextStats = {
+        ...localStats,
+        likesDelta: (Number(localStats.likesDelta) || 0) + delta,
+      };
+      localStorage.setItem(localStatsKey, JSON.stringify(nextStats));
+      localStorage.setItem(likedKey, String(nextLiked));
+      setStats((current) => ({
+        ...current,
+        likes: Math.max(0, current.likes + delta),
+      }));
+      return nextLiked;
+    });
+  }, [postId]);
   const handleSave = useCallback(() => setSaved((p) => !p), []);
 
   const handleCopyLink = useCallback(() => {
@@ -183,20 +335,58 @@ const BlogDetail = () => {
       const url = window.location.href;
       const title = post?.title || "";
       const urls = {
-        facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
-        twitter: `https://twitter.com/intent/tweet?url=${encodeURIComponent(url)}&text=${encodeURIComponent(title)}`,
+        instagram: SOCIAL_LINKS.instagram,
         linkedin: `https://www.linkedin.com/shareArticle?mini=true&url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}`,
-        email: `mailto:?subject=${encodeURIComponent(title)}&body=${encodeURIComponent(`Check out: ${url}`)}`,
+        whatsapp: `https://wa.me/?text=${encodeURIComponent(`${title} ${url}`)}`,
+        youtube: SOCIAL_LINKS.youtube,
       };
-      if (platform === "email") {
-        window.location.href = urls[platform];
-      } else {
-        window.open(urls[platform], "_blank");
+
+      if (platform === "instagram") {
+        navigator.clipboard?.writeText(url);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+
+      if (urls[platform]) {
+        window.open(urls[platform], "_blank", "noopener,noreferrer");
       }
       setShowShareMenu(false);
     },
     [post?.title]
   );
+
+  const handleSubscriptionSubmit = useCallback(
+    (event) => {
+      event.preventDefault();
+      const email = subscriberEmail.trim().toLowerCase();
+      const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      if (!emailPattern.test(email)) {
+        setSubscriptionMessage("Please enter a valid email address.");
+        return;
+      }
+
+      subscribeToBlog({
+        email,
+        source: "blog_detail",
+        blogId: postId,
+        blogSlug: slug,
+      });
+    },
+    [postId, slug, subscribeToBlog, subscriberEmail]
+  );
+
+  const openSocialProfile = useCallback((platform) => {
+    const url = SOCIAL_LINKS[platform];
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
+
+  const handleCommentCountChange = useCallback((count) => {
+    setStats((current) => ({
+      ...current,
+      comments: Number(count) || 0,
+    }));
+  }, []);
 
   const scrollToTop = useCallback(
     () => window.scrollTo({ top: 0, behavior: "smooth" }),
@@ -220,16 +410,15 @@ const BlogDetail = () => {
   /* ────── share menu items ────── */
   const shareItems = useMemo(
     () => [
+      { action: () => handleShare("instagram"), icon: Instagram, label: copied ? "Link copied" : "Instagram", color: "text-pink-600" },
+      { action: () => handleShare("linkedin"), icon: Linkedin, label: "LinkedIn", color: "text-blue-700" },
+      { action: () => handleShare("whatsapp"), icon: MessageCircle, label: "WhatsApp", color: "text-green-600" },
       {
         action: handleCopyLink,
         icon: copied ? Check : Copy,
         label: copied ? "Copied!" : "Copy Link",
         color: copied ? "text-green-500" : "text-gray-700",
       },
-      { action: () => handleShare("facebook"), icon: Facebook, label: "Facebook", color: "text-blue-600" },
-      { action: () => handleShare("twitter"), icon: Twitter, label: "Twitter", color: "text-blue-400" },
-      { action: () => handleShare("linkedin"), icon: Linkedin, label: "LinkedIn", color: "text-blue-700" },
-      { action: () => handleShare("email"), icon: Mail, label: "Email", color: "text-gray-600" },
     ],
     [copied, handleCopyLink, handleShare]
   );
@@ -243,7 +432,7 @@ const BlogDetail = () => {
       .replace(/\s+/g, " ")
       .trim();
     if (!text) return "";
-    return text.length > 200 ? `${text.slice(0, 197)}…` : text;
+    return text.length > 260 ? `${text.slice(0, 257)}...` : text;
   }, [post]);
 
   const categoryLabel = (post?.category || "General").trim();
@@ -398,9 +587,9 @@ const BlogDetail = () => {
       </MotionDiv>
 
       <div className="pt-20 sm:pt-24 pb-16 sm:pb-24">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-6">
           {/* Intro: breadcrumbs → title — max-w-3xl; sidebar does not start here */}
-          <header className="max-w-3xl">
+          <header className="max-w-4xl">
             <MotionDiv
               variants={staggerHeader}
               initial="hidden"
@@ -440,7 +629,7 @@ const BlogDetail = () => {
                   {post.title}
                 </h1>
                 {summaryLine && (
-                  <p className="line-clamp-2 text-base leading-relaxed text-stone-500 sm:text-lg">
+                  <p className="max-w-3xl text-base leading-relaxed text-stone-600 sm:text-lg">
                     {summaryLine}
                   </p>
                 )}
@@ -453,17 +642,15 @@ const BlogDetail = () => {
                 <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
                   <div className="flex min-w-0 items-center gap-3 sm:gap-4">
                     <img
-                      src={`https://ui-avatars.com/api/?name=${encodeURIComponent(
-                        "Mozno Wealth"
-                      )}&background=047857&color=fff&size=96`}
-                      alt=""
+                      src={authorAvatar}
+                      alt={author.name}
                       className="h-12 w-12 shrink-0 rounded-full object-cover ring-2 ring-stone-100 shadow-md sm:h-14 sm:w-14"
                       loading="lazy"
                     />
                     <div className="min-w-0">
-                      <p className="truncate font-semibold text-stone-900 sm:text-lg">Mozno Wealth</p>
+                      <p className="truncate font-semibold text-stone-900 sm:text-lg">{author.name}</p>
                       <p className="mt-0.5 text-xs text-stone-500 sm:text-sm">
-                        <span className="font-medium text-stone-700">By Mozno Wealth</span>
+                        <span className="font-medium text-stone-700">By {author.name}</span>
                         <span className="text-stone-300 mx-1.5" aria-hidden>
                           ·
                         </span>
@@ -480,30 +667,30 @@ const BlogDetail = () => {
                   <div className="flex shrink-0 items-center justify-end gap-1.5 border-t border-stone-100 pt-4 sm:justify-start sm:border-t-0 sm:pt-0 sm:gap-2">
                     <MotionButton
                       type="button"
-                      aria-label="Share on LinkedIn"
+                      aria-label="Open Instagram"
                       whileTap={{ scale: 0.94 }}
-                      onClick={() => handleShare("linkedin")}
+                      onClick={() => openSocialProfile("instagram")}
+                      className="rounded-full border border-stone-200 bg-white p-2.5 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:text-pink-600 hover:bg-stone-50 sm:p-3"
+                    >
+                      <Instagram className="h-4 w-4 sm:h-[1.125rem] sm:w-[1.125rem]" />
+                    </MotionButton>
+                    <MotionButton
+                      type="button"
+                      aria-label="Open LinkedIn"
+                      whileTap={{ scale: 0.94 }}
+                      onClick={() => openSocialProfile("linkedin")}
                       className="rounded-full border border-stone-200 bg-white p-2.5 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:text-[#0A66C2] hover:bg-stone-50 sm:p-3"
                     >
                       <Linkedin className="h-4 w-4 sm:h-[1.125rem] sm:w-[1.125rem]" />
                     </MotionButton>
                     <MotionButton
                       type="button"
-                      aria-label="Share on X"
+                      aria-label="Open YouTube"
                       whileTap={{ scale: 0.94 }}
-                      onClick={() => handleShare("twitter")}
-                      className="rounded-full border border-stone-200 bg-white p-2.5 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:text-stone-900 hover:bg-stone-50 sm:p-3"
+                      onClick={() => openSocialProfile("youtube")}
+                      className="rounded-full border border-stone-200 bg-white p-2.5 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:text-red-600 hover:bg-stone-50 sm:p-3"
                     >
-                      <Twitter className="h-4 w-4 sm:h-[1.125rem] sm:w-[1.125rem]" />
-                    </MotionButton>
-                    <MotionButton
-                      type="button"
-                      aria-label="Share on Facebook"
-                      whileTap={{ scale: 0.94 }}
-                      onClick={() => handleShare("facebook")}
-                      className="rounded-full border border-stone-200 bg-white p-2.5 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:text-[#1877F2] hover:bg-stone-50 sm:p-3"
-                    >
-                      <Facebook className="h-4 w-4 sm:h-[1.125rem] sm:w-[1.125rem]" />
+                      <Youtube className="h-4 w-4 sm:h-[1.125rem] sm:w-[1.125rem]" />
                     </MotionButton>
                     <MotionButton
                       type="button"
@@ -525,8 +712,8 @@ const BlogDetail = () => {
           </header>
 
           {/* Featured image + article align with sidebar (sidebar starts here on desktop) */}
-          <div className="mt-8 flex flex-col gap-10 lg:mt-10 lg:flex-row lg:items-start lg:gap-12 xl:gap-14">
-            <div className="min-w-0 w-full max-w-3xl flex-1">
+          <div className="mt-8 flex flex-col gap-8 lg:mt-10 lg:flex-row lg:items-start lg:gap-8 xl:gap-10">
+            <div className="min-w-0 w-full max-w-4xl flex-1">
               <MotionFigure
                 variants={headerItem}
                 initial="hidden"
@@ -539,6 +726,8 @@ const BlogDetail = () => {
                   <BlogHeroImage
                     key={`${slug}-${displayCoverSrc}`}
                     displayCoverSrc={displayCoverSrc}
+                    title={post.title}
+                    onReady={() => setCriticalReady(true)}
                   />
                 </div>
                 <figcaption className="sr-only">Featured image for {post.title}</figcaption>
@@ -549,7 +738,7 @@ const BlogDetail = () => {
                 initial="hidden"
                 whileInView="visible"
                 viewport={{ once: true, margin: "-40px" }}
-                className="mt-10 sm:mt-12 w-full max-w-3xl rounded-2xl border border-stone-200/90 bg-white px-6 py-8 shadow-sm sm:px-9 sm:py-10 md:px-10 md:py-12"
+                className="mt-8 sm:mt-10 w-full max-w-4xl rounded-2xl border border-stone-200/90 bg-white px-5 py-7 shadow-sm sm:px-8 sm:py-9 md:px-10 md:py-11"
               >
                 <div className="mb-8 flex flex-wrap items-center justify-between gap-4 border-b border-stone-100 pb-6">
                   <div className="flex items-center gap-2 text-sm text-stone-500">
@@ -567,16 +756,16 @@ const BlogDetail = () => {
                           liked ? "fill-current" : ""
                         }`}
                       />
-                      <span className="text-xs font-medium">{liked ? 1 : "Like"}</span>
+                      <span className="text-xs font-medium">{formatCount(stats.likes)}</span>
                     </MotionButton>
                     <div className="hidden h-4 w-px bg-stone-200 sm:block" />
                     <div className="flex items-center gap-1.5 px-1">
                       <Eye className="h-4 w-4" />
-                      <span className="text-xs">0</span>
+                      <span className="text-xs">{formatCount(stats.views)}</span>
                     </div>
                     <div className="flex items-center gap-1.5 px-1">
                       <MessageCircle className="h-4 w-4" />
-                      <span className="text-xs">0</span>
+                      <span className="text-xs">{formatCount(stats.comments)}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
@@ -680,12 +869,42 @@ const BlogDetail = () => {
                     Wealth, tax, and planning updates from Mozno Wealth—straight to your inbox when you
                     connect with us.
                   </p>
-                  <Link
-                    to="/contact"
-                    className="mt-7 inline-flex items-center justify-center rounded-full bg-emerald-500 px-7 py-3 text-sm font-semibold text-white shadow-md transition-colors hover:bg-emerald-400"
+                  <form
+                    onSubmit={handleSubscriptionSubmit}
+                    className="mt-7 flex max-w-xl flex-col gap-3 sm:flex-row"
                   >
-                    Request updates
-                  </Link>
+                    <label className="sr-only" htmlFor="blog-subscribe-email">
+                      Email address
+                    </label>
+                    <input
+                      id="blog-subscribe-email"
+                      type="email"
+                      value={subscriberEmail}
+                      onChange={(event) => {
+                        setSubscriberEmail(event.target.value);
+                        setSubscriptionMessage("");
+                      }}
+                      placeholder="Email address"
+                      className="min-h-12 flex-1 rounded-full border border-white/15 bg-white/10 px-5 text-sm text-white outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-300/40 placeholder:text-stone-400"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isSubscribing}
+                      className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full bg-emerald-500 px-6 text-sm font-semibold text-white shadow-md transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {isSubscribing ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                      Subscribe
+                    </button>
+                  </form>
+                  {subscriptionMessage && (
+                    <p className="mt-3 text-sm text-emerald-100">
+                      {subscriptionMessage}
+                    </p>
+                  )}
                 </MotionDiv>
 
                 <MotionDiv
@@ -702,10 +921,8 @@ const BlogDetail = () => {
                   <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-5">
                     <div className="relative mx-auto shrink-0 sm:mx-0">
                       <img
-                        src={`https://ui-avatars.com/api/?name=${encodeURIComponent(
-                          "Mozno Wealth"
-                        )}&background=047857&color=fff&size=96`}
-                        alt=""
+                        src={authorAvatar}
+                        alt={author.name}
                         loading="lazy"
                         className="h-20 w-20 rounded-2xl border-2 border-white object-cover shadow-md sm:h-[5.25rem] sm:w-[5.25rem]"
                       />
@@ -718,9 +935,9 @@ const BlogDetail = () => {
                         Written by
                       </p>
                       <h4 className="font-blog-serif mt-1 text-xl font-bold text-stone-900 sm:text-2xl">
-                        Mozno Wealth
+                        {author.name}
                       </h4>
-                      <p className="text-xs text-stone-500 sm:text-sm">Contributor</p>
+                      <p className="text-xs text-stone-500 sm:text-sm">{author.role}</p>
                       <p className="mt-3 text-sm leading-[1.65] text-stone-600">
                         Helping individuals and businesses achieve financial success through wealth
                         management, tax planning, and investment guidance.
@@ -730,12 +947,17 @@ const BlogDetail = () => {
                 </MotionDiv>
               </MotionSection>
 
-              <div className="mt-12 w-full max-w-3xl lg:hidden">
+              <div className="mt-12 w-full max-w-4xl lg:hidden">
                 <RecentPosts currentPostId={post._id} />
               </div>
 
-              <div className="mt-12 w-full max-w-3xl">
-                {post && <CommentSection postId={post._id} />}
+              <div className="mt-12 w-full max-w-4xl">
+                {post && (
+                  <CommentSection
+                    postId={postId}
+                    onCountChange={handleCommentCountChange}
+                  />
+                )}
               </div>
             </div>
 
@@ -770,6 +992,70 @@ const BlogDetail = () => {
       </div>
 
       {/* ═══════ SCROLL TO TOP ═══════ */}
+      <AnimatePresence>
+        {!criticalReady && (
+          <MotionDiv
+            initial={{ opacity: 1 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25 }}
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-stone-50/95 backdrop-blur-sm"
+          >
+            <div className="text-center">
+              <div className="relative mx-auto mb-4 h-14 w-14">
+                <MotionDiv
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                  className="absolute inset-0 rounded-full border-[3px] border-transparent border-t-emerald-500 border-r-emerald-300"
+                />
+                <div className="absolute inset-2 flex items-center justify-center rounded-full bg-white shadow-sm">
+                  <Sparkles className="h-5 w-5 text-emerald-600" />
+                </div>
+              </div>
+              <p className="text-sm font-semibold text-stone-800">
+                Preparing article
+              </p>
+            </div>
+          </MotionDiv>
+        )}
+      </AnimatePresence>
+
+      <div
+        className="fixed right-3 top-1/2 z-40 hidden -translate-y-1/2 flex-col gap-2 md:flex"
+        aria-label="Floating share actions"
+      >
+        {shareItems.map((item) => (
+          <MotionButton
+            key={item.label}
+            type="button"
+            whileTap={{ scale: 0.92 }}
+            whileHover={{ x: -2 }}
+            onClick={item.action}
+            className={`group relative flex h-11 w-11 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 shadow-lg shadow-stone-900/10 transition-colors hover:bg-stone-50 ${item.color}`}
+          >
+            <item.icon className="h-4 w-4" />
+            <span className="pointer-events-none absolute right-full mr-2 whitespace-nowrap rounded-md bg-stone-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+              {item.label}
+            </span>
+          </MotionButton>
+        ))}
+      </div>
+
+      <div className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 gap-2 rounded-full border border-stone-200 bg-white/95 p-1.5 shadow-xl shadow-stone-900/10 backdrop-blur md:hidden">
+        {shareItems.map((item) => (
+          <MotionButton
+            key={item.label}
+            type="button"
+            aria-label={item.label}
+            whileTap={{ scale: 0.92 }}
+            onClick={item.action}
+            className={`flex h-10 w-10 items-center justify-center rounded-full text-stone-600 transition-colors hover:bg-stone-50 ${item.color}`}
+          >
+            <item.icon className="h-4 w-4" />
+          </MotionButton>
+        ))}
+      </div>
+
       <AnimatePresence>
         {showScrollTop && (
           <MotionButton

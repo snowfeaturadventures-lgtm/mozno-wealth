@@ -4,6 +4,7 @@ import { ArrowRight, Clock, Calendar, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import { useBlogs } from '../../hooks/useBlog';
+import { blogPosts as fallbackPosts } from '../../data/blog';
 
 const RecentPosts = ({ currentPostId, variant = "default" }) => {
   // Fetch blogs using the hook
@@ -17,9 +18,9 @@ const RecentPosts = ({ currentPostId, variant = "default" }) => {
   });
 
   // Extract blogs from response and filter out current post
-  const allPosts = response?.blogs || [];
+  const allPosts = response?.blogs?.length ? response.blogs : fallbackPosts;
   const recentPosts = allPosts
-    .filter((post) => post._id !== currentPostId)
+    .filter((post) => String(post._id || post.id) !== String(currentPostId))
     .slice(0, variant === "sidebar" ? 4 : 3);
 
   // Format date helper

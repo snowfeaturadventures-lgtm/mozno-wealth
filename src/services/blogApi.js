@@ -32,6 +32,47 @@ export const blogApi = {
     const response = await apiClient.post("/blogs/add-comment", data);
     return response.data;
   },
+
+  // Newsletter endpoint is not available on the current deployed API.
+  // Keep this helper centralized so a future backend route can be enabled here.
+  subscribe: async ({ email, source, blogId, blogSlug }) => {
+    const normalizedEmail = email?.trim().toLowerCase();
+    if (!normalizedEmail) throw new Error("Email is required");
+
+    const storageKey = "mozno_blog_subscribers";
+    const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
+    const alreadySubscribed = existing.some(
+      (entry) => entry.email === normalizedEmail,
+    );
+
+    if (alreadySubscribed) {
+      return {
+        success: true,
+        message: "You are already subscribed.",
+        duplicate: true,
+      };
+    }
+
+    const subscription = {
+      email: normalizedEmail,
+      source,
+      blogId,
+      blogSlug,
+      createdAt: new Date().toISOString(),
+      syncStatus: "pending_backend_endpoint",
+    };
+
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify([...existing, subscription]),
+    );
+
+    return {
+      success: true,
+      message: "Subscription saved. We will keep you posted.",
+      subscription,
+    };
+  },
 };
 
 

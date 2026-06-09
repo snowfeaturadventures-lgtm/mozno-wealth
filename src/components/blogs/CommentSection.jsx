@@ -1,5 +1,5 @@
 // components/blogs/CommentSection.jsx
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   MessageCircle,
@@ -272,7 +272,13 @@ const CommentInput = ({ onSubmit, isSubmitting, replyTo, onCancelReply }) => {
 };
 
 // ─── Main CommentSection ─────────────────────────────
-const CommentSection = ({ postId }) => {
+const countComments = (comments = []) =>
+  comments.reduce(
+    (total, comment) => total + 1 + countComments(comment.replies || []),
+    0,
+  );
+
+const CommentSection = ({ postId, onCountChange }) => {
   const [replyTo, setReplyTo] = useState(null);
 
   // Fetch comments
@@ -282,7 +288,12 @@ const CommentSection = ({ postId }) => {
   const { mutate: addComment, isPending: isSubmitting } = useAddComment();
 
   // Extract comments from response
-  const comments = data?.comments || [];
+  const comments = useMemo(() => data?.comments || [], [data?.comments]);
+  const totalComments = useMemo(() => countComments(comments), [comments]);
+
+  useEffect(() => {
+    if (!isLoading && !isError) onCountChange?.(totalComments);
+  }, [isLoading, isError, onCountChange, totalComments]);
 
   const handleReply = (commentId, authorName) => {
     setReplyTo({ id: commentId, name: authorName });
@@ -318,9 +329,9 @@ const CommentSection = ({ postId }) => {
             <MessageCircle className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
           Comments
-          {!isLoading && comments.length > 0 && (
+          {!isLoading && totalComments > 0 && (
             <span className="text-sm sm:text-base font-normal text-gray-400">
-              ({comments.length})
+              ({totalComments})
             </span>
           )}
         </h3>
